@@ -4,6 +4,14 @@ if (-not $pythonCmd) {
   $pythonCmd = Get-Command python3 -ErrorAction SilentlyContinue
 }
 
+# remove old environment variables
+Remove-Item Env:AZURE_OPENAI_ENDPOINT
+Remove-Item Env:AZURE_OPENAI_REALTIME_DEPLOYMENT
+Remove-Item Env:AZURE_OPENAI_API_KEY
+Remove-Item Env:AZURE_SEARCH_ENDPOINT
+Remove-Item Env:AZURE_SEARCH_INDEX
+Remove-Item Env:AZURE_SEARCH_API_KEY
+
 Write-Host 'Creating python virtual environment ".venv"'
 Start-Process -FilePath ($pythonCmd).Source -ArgumentList "-m venv ./.venv" -Wait -NoNewWindow
 
