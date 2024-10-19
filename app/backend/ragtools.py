@@ -1,11 +1,18 @@
 import re
 import pyodbc
+import json
 from typing import Any
 
 from azure.identity import DefaultAzureCredential
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents.aio import SearchClient
-from azure.search.documents.models import VectorizableTextQuery
+from azure.search.documents.models import (
+    VectorizableTextQuery,
+    VectorizedQuery,
+    QueryType,
+    QueryCaptionType,
+    QueryAnswerType,
+)
 from rtmt import RTMiddleTier, Tool, ToolResult, ToolResultDirection
 
 _find_destination_tool_schema = {
@@ -135,23 +142,150 @@ _grounding_tool_schema = {
     }
 }
 
+# Retrieves the destinations with a flight duration less than or equal to the specified duration
+def get_destinations_by_duration(source: str, duration: float, conn) -> str:
+    # SQL query to select the destinations with a flight duration less than or equal to the specified duration
+    query = """
+    SELECT Destination
+    FROM dbo.FlightDuration
+    WHERE Source = ? AND Duration <= ?
+    """
+    # Execute the query
+    cursor = conn.cursor()
+    cursor.execute(query, (source, duration))
+
+    # Fetch the results
+    rows = cursor.fetchall()
+
+    # Check if we got any results
+    if rows:
+        # Extract the destinations from the result
+        destinations = [row.Destination for row in rows]
+        return json.dumps(destinations)  # Return the destinations as a JSON string
+    else:
+        return json.dumps([])  # Return an empty list if no data is found
+
+# Retrieves the destinations with a flight price less than or equal to the specified price
+def get_destinations_by_price(source: str, price: float, conn) -> str:
+    # SQL query to select the destinations with a flight price less than or equal to the specified price
+    query = """
+    SELECT Destination
+    FROM dbo.FlightPrice
+    WHERE Source = ? AND Price <= ?
+    """
+    # Execute the query
+    cursor = conn.cursor()
+    cursor.execute(query, (source, price))
+
+    # Fetch the results
+    rows = cursor.fetchall()
+
+    # Check if we got any results
+    if rows:
+        # Extract the destinations from the result
+        destinations = [row.Destination for row in rows]
+        return json.dumps(destinations)  # Return the destinations as a JSON string
+    else:
+        return json.dumps([])  # Return an empty list if no data is found
+
 # Tool to find a destination using a set of criteria
-async def _find_destination_tool(search_client: SearchClient, args: Any) -> ToolResult:
+async def _find_destination_tool(db_conn_string: str, search_client: SearchClient, args: Any) -> ToolResult:
     print("Finding destination with the following criteria:")
     print(f"- Current location '{args['current_location']}'")
+    source = args["current_location"]
 
     if "max_flight_duration" in args:
         print(f"- Max flight duration {args['max_flight_duration']} hours")
+        duration = args["max_flight_duration"]
+    else:
+        duration = None
 
     if "max_price" in args:
         print(f"- Max price {args['max_price']} EUR")
+        price = args["max_price"]
+    else:
+        price = None
 
     if "categories" in args:
         print(f"- Categories {args['categories']}")
+        categories = args["categories"]
+    else:
+        categories
     
-    result = "[Paris@KB]: Destination: Paris\nPrice: 200 EUR\nDuration: 2.5 hours\n-----\n"
-    result += "[Madrid@KB]: Destination: Madrid\nPrice: 147 EUR\nDuration: 1.5 hours\n-----\n"
-    result += "[Barcelona@KB]: Destination: Barcelona\nPrice: 178 EUR\nDuration: 2 hours\n-----\n"
+    if "content" in args:
+        print(f"- Content '{args['content']}'")
+        content = args["content"]
+    else:
+        content = None
+
+    # open a connection to the database
+    conn = pyodbc.connect(db_conn_string)
+
+    # Get the destinations by duration
+    destinations_by_duration = []
+    if duration:
+        destinations_by_duration = json.loads(get_destinations_by_duration(source, duration, conn))
+        print(f"Destinations by duration: {destinations_by_duration}")
+
+    # Get the destinations by price
+    destinations_by_price = []
+    if price:
+        destinations_by_price = json.loads(get_destinations_by_price(source, price, conn))
+        print(f"Destinations by price: {destinations_by_price}")
+
+    # Close the database connection
+    conn.close()
+
+    # Generate filter string based on destinations that satisfy both duration and price constraints
+    filter_string = ""
+
+    if destinations_by_duration and destinations_by_price:
+        intersection_of_destinations = list(set(destinations_by_duration) & set(destinations_by_price))
+    elif destinations_by_duration:
+        intersection_of_destinations = destinations_by_duration
+    else:
+        intersection_of_destinations = destinations_by_price
+
+    if intersection_of_destinations:
+        # Generate the filter string based on iata_code values in intersection_of_destinations
+        destination_filter_parts = [f"iata_code eq '{destination}'" for destination in intersection_of_destinations]
+        filter_string = " or ".join(destination_filter_parts)
+
+    # Generate filter string based on categories
+    if categories:
+        category_filter_parts = [f"categories/any(c: c eq '{category}')" for category in categories]
+        category_filter_string = " and ".join(category_filter_parts)
+        if filter_string:
+            filter_string = f"({filter_string}) and ({category_filter_string})"
+        else:
+            filter_string = category_filter_string
+
+    print(f"Filter String: {filter_string}")
+
+    # Search for the destinations based on the user's question
+    if content is None:
+        content = "travel"
+
+    search_results = await search_client.search(
+        search_text=content,
+        vector_queries=[VectorizableTextQuery(text=content, k_nearest_neighbors=50, fields="destination_vector, country_vector")],
+        query_type=QueryType.SEMANTIC,
+        semantic_configuration_name="semantic-tap",
+        query_caption=QueryCaptionType.EXTRACTIVE,
+        query_answer=QueryAnswerType.EXTRACTIVE,
+        top=5,
+        filter=filter_string
+    )
+
+    result = ""
+    async for item in search_results:
+        item_string = f"[{item['destination']} @KB]: Destination: {item['destination']}\n{item['destination_pt']}\nCountry: {item['country']}\n{item['country_pt']}\nCategories: {item['categories']}\n-----\n"
+        print(f"Found destination: {item_string}")
+        result += item_string
+
+    #result = "[Paris@KB]: Destination: Paris\nPrice: 200 EUR\nDuration: 2.5 hours\n-----\n"
+    #result += "[Madrid@KB]: Destination: Madrid\nPrice: 147 EUR\nDuration: 1.5 hours\n-----\n"
+    #result += "[Barcelona@KB]: Destination: Barcelona\nPrice: 178 EUR\nDuration: 2 hours\n-----\n"
 
     return ToolResult(result, ToolResultDirection.TO_SERVER)
 
@@ -159,9 +293,27 @@ async def _find_destination_tool(search_client: SearchClient, args: Any) -> Tool
 async def _get_destination_info_tool(search_client: SearchClient, args: Any) -> ToolResult:
     print(f"Getting information about destination for query '{args['query']}'")
 
-    result = "[Paris@KB]: Paris is the capital of France and is known for its art, fashion, gastronomy, and culture.\n-----\n"
-    result += "[Madrid@KB]: Madrid is the capital of Spain and is known for its elegant boulevards and expansive parks.\n-----\n"
-    result += "[Barcelona@KB]: Barcelona is the capital of Catalonia and is known for its art and architecture.\n-----\n"
+    search_results = await search_client.search(
+        search_text=args['query'], 
+        vector_queries=[VectorizableTextQuery(text=args['query'], k_nearest_neighbors=3, fields="destination_vector, country_vector")],
+        query_type=QueryType.SEMANTIC,
+        top=3,
+        semantic_configuration_name="semantic-tap",
+        query_caption=QueryCaptionType.EXTRACTIVE,
+        query_answer=QueryAnswerType.EXTRACTIVE
+    )
+
+    result = ""
+    async for item in search_results:
+        item_string = f"[{item['destination']} @KB]: Destination: {item['destination']}\n{item['destination_pt']}\nCountry: {item['country']}\n{item['country_pt']}\nCategories: {item['categories']}\n-----\n"
+        print(f"Found destination: {item_string}")
+        result += item_string
+
+    print(f"Search results: {result}")
+
+    #result = "[Paris@KB]: Paris is the capital of France and is known for its art, fashion, gastronomy, and culture.\n-----\n"
+    #result += "[Madrid@KB]: Madrid is the capital of Spain and is known for its elegant boulevards and expansive parks.\n-----\n"
+    #result += "[Barcelona@KB]: Barcelona is the capital of Catalonia and is known for its art and architecture.\n-----\n"
 
     return ToolResult(result, ToolResultDirection.TO_SERVER)
 
@@ -268,20 +420,26 @@ async def _report_grounding_tool(search_client: SearchClient, args: Any) -> None
 
     # Use search instead of filter to align with how detailt integrated vectorization indexes
     # are generated, where chunk_id is searchable with a keyword tokenizer, not filterable 
-    search_results = await search_client.search(search_text=list, 
-                                                search_fields=["chunk_id"], 
-                                                select=["chunk_id", "title", "chunk"], 
-                                                top=len(sources), 
-                                                query_type="full")
-    
+    '''
+    search_results = await search_client.search(
+        search_text=list, 
+        search_fields=["chunk_id"], 
+        select=["chunk_id", "title", "chunk"], 
+        top=len(sources), 
+        query_type="full"
+    )
+    '''
+
     # If your index has a key field that's filterable but not searchable and with the keyword analyzer, you can 
     # use a filter instead (and you can remove the regex check above, just ensure you escape single quotes)
     # search_results = await search_client.search(filter=f"search.in(chunk_id, '{list}')", select=["chunk_id", "title", "chunk"])
-
+    '''
     docs = []
     async for r in search_results:
         docs.append({"chunk_id": r['chunk_id'], "title": r["title"], "chunk": r['chunk']})
-    return ToolResult({"sources": docs}, ToolResultDirection.TO_CLIENT)
+    '''
+    
+    return ToolResult({"sources": sources}, ToolResultDirection.TO_CLIENT)
 
 # Attaches the RAG tools to the RTMiddleTier
 def attach_rag_tools(rtmt: RTMiddleTier, db_conn_string: str, search_endpoint: str, search_index: str, credentials: AzureKeyCredential | DefaultAzureCredential) -> None:
@@ -289,7 +447,7 @@ def attach_rag_tools(rtmt: RTMiddleTier, db_conn_string: str, search_endpoint: s
         credentials.get_token("https://search.azure.com/.default") # warm this up before we start getting requests
     search_client = SearchClient(search_endpoint, search_index, credentials, user_agent="RTMiddleTier")
 
-    rtmt.tools["find_destination"] = Tool(schema=_find_destination_tool_schema, target=lambda args: _find_destination_tool(search_client, args))
+    rtmt.tools["find_destination"] = Tool(schema=_find_destination_tool_schema, target=lambda args: _find_destination_tool(db_conn_string, search_client, args))
     rtmt.tools["get_destination_info"] = Tool(schema=_get_destination_info_tool_schema, target=lambda args: _get_destination_info_tool(search_client, args))
     rtmt.tools["get_flight_info"] = Tool(schema=_get_flight_info_tool_schema, target=lambda args: _get_flight_info_tool(db_conn_string, args))
     rtmt.tools["search"] = Tool(schema=_search_tool_schema, target=lambda args: _search_tool(search_client, args))

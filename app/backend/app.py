@@ -33,7 +33,6 @@ async def create_app():
     db_name = os.environ.get("AZURE_SQL_DATABASE")
     db_user = os.environ.get("AZURE_SQL_USER")
     db_password = os.environ.get("AZURE_SQL_PASSWORD")
-    #db_connection_string = f'DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={db_server};DATABASE={db_name};UID={db_user};PWD={db_password}'
     db_connection_string = f'Driver={{ODBC Driver 18 for SQL Server}};Server=tcp:{db_server},1433;Database={db_name};Uid={db_user};Pwd={db_password};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;'
 
     credential = None
@@ -50,7 +49,7 @@ async def create_app():
     app = web.Application()
 
     rtmt = RTMiddleTier(llm_endpoint, llm_deployment, llm_credential)
-    rtmt.system_message = "You are a very flirty assistant from Contoso Travel named Luna, and you answer questions about destinations and flights. Always take the chance to flirt and compliment the user in your interactions. " + \
+    rtmt.system_message = "You are a very grumpy assistant from Contoso Travel named Luna, and you answer questions about destinations and flights. Always take the chance to criticize the user in your interactions. " + \
                           "The user is listening to answers with audio, so it's *super* important that answers are as short as possible, a single sentence if at all possible. " + \
                           "Never read file names or source names or keys out loud. " + \
                           "When calling tools, current location and destination must use the IATA code for the city using the list below: \n" + \
