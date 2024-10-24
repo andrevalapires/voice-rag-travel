@@ -270,7 +270,7 @@ async def _find_destination_tool(db_conn_string: str, search_client: SearchClien
         search_text=content,
         vector_queries=[VectorizableTextQuery(text=content, k_nearest_neighbors=50, fields="destination_vector, country_vector")],
         query_type=QueryType.SEMANTIC,
-        semantic_configuration_name="semantic-tap",
+        semantic_configuration_name="semantic-contoso",
         query_caption=QueryCaptionType.EXTRACTIVE,
         query_answer=QueryAnswerType.EXTRACTIVE,
         top=5,
@@ -298,7 +298,7 @@ async def _get_destination_info_tool(search_client: SearchClient, args: Any) -> 
         vector_queries=[VectorizableTextQuery(text=args['query'], k_nearest_neighbors=3, fields="destination_vector, country_vector")],
         query_type=QueryType.SEMANTIC,
         top=3,
-        semantic_configuration_name="semantic-tap",
+        semantic_configuration_name="semantic-contoso",
         query_caption=QueryCaptionType.EXTRACTIVE,
         query_answer=QueryAnswerType.EXTRACTIVE
     )
@@ -391,10 +391,14 @@ async def _search_tool(search_client: SearchClient, args: Any) -> ToolResult:
     # Hybrid + Reranking query using Azure AI Search
     search_results = await search_client.search(
         search_text=args['query'], 
-        query_type="semantic",
+        vector_queries=[VectorizableTextQuery(text=args['query'], k_nearest_neighbors=50, fields="destination_vector, country_vector")],
+        query_type=QueryType.SEMANTIC,
         top=5,
-        vector_queries=[VectorizableTextQuery(text=args['query'], k_nearest_neighbors=50, fields="text_vector")],
-        select="chunk_id,title,chunk")
+        semantic_configuration_name="semantic-contoso",
+        query_caption=QueryCaptionType.EXTRACTIVE,
+        query_answer=QueryAnswerType.EXTRACTIVE,
+        select="chunk_id,title,chunk"
+    )
     
     result = ""
     async for r in search_results:
@@ -438,7 +442,7 @@ async def _report_grounding_tool(search_client: SearchClient, args: Any) -> None
     async for r in search_results:
         docs.append({"chunk_id": r['chunk_id'], "title": r["title"], "chunk": r['chunk']})
     '''
-    
+
     return ToolResult({"sources": sources}, ToolResultDirection.TO_CLIENT)
 
 # Attaches the RAG tools to the RTMiddleTier
